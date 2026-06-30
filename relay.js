@@ -579,7 +579,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`|  SafeHaven v1 Relay (M1)        port ${String(PORT).padEnd(15)}|`)
   console.log('+----------------------------------------------------+')
   console.log(`|  WebSocket:  ws://${ip}:${PORT}/ws`.padEnd(54) + '|')
-  console.log(`|  Receiver:   http://${ip}:${PORT}/  (if dist built)`.padEnd(54) + '|')
+  console.log(`|  Receiver:   http://${ip}:${PORT}/`.padEnd(54) + '|')
   console.log('+----------------------------------------------------+')
   console.log(`|  Roles: ?role=sender|receiver&token=<hex>&v=1`.padEnd(54) + '|')
   console.log(`|  Event-log cap: ${String(MAX_EVENT_LOG).padEnd(36)}|`)

@@ -96,6 +96,23 @@ PORT=9000 npm start
 
 Requires Node >= 20, ESM (`"type":"module"`), and the `ws` package.
 
+## Deploy on Fly.io
+
+This repo includes `fly.toml` for the `safehaven-relayserver` app. The relay
+listens on `0.0.0.0:${PORT}` and defaults to `8080`, so Fly is configured with:
+
+```toml
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+```
+
+If Fly logs say it is probing `0.0.0.0:3000`, the deployed config is stale or
+was generated before this file existed. Redeploy from this repo so Fly uses the
+checked-in `fly.toml`.
+
 ## Config
 
 | Var | Default | Meaning |
