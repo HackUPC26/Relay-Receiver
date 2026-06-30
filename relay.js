@@ -1,32 +1,32 @@
-// SafeHaven v1 — stateful WebSocket relay (M1)
+// SafeHaven v1 - stateful WebSocket relay (M1)
 // ---------------------------------------------------------------------------
-// Single source of truth: ../PROTOCOL.md. Where this file and the spec ever
-// disagree, the spec wins. Section references (§N) point at PROTOCOL.md.
+// Single source of truth: PROTOCOL.md. Where this file and the spec ever
+// disagree, the spec wins. Section references (Section N) point at PROTOCOL.md.
 //
 // What this relay is (and is NOT):
-//   - It is a STATEFUL, per-token room manager (§7). Per session token it keeps,
+//   - It is a STATEFUL, per-token room manager (Section 7). Per session token it keeps,
 //     in RAM only:
-//       * the live sender socket (one per token, §1.3 / §6.3),
+//       * the live sender socket (one per token, Section 1.3 / Section 6.3),
 //       * the set of receiver sockets (many per token),
 //       * the full ordered eventLog of every product-event TEXT frame since the
 //         current incident opened, and
 //       * the last BINARY frame whose header KEYFRAME flag is set (lastVideoIDR).
 //   - On a receiver join it replays the ENTIRE eventLog in order, THEN the
-//     lastVideoIDR, BEFORE any live frame reaches that receiver (§7 / §8), so a
+//     lastVideoIDR, BEFORE any live frame reaches that receiver (Section 7 / Section 8), so a
 //     contact opening the link mid-incident sees the whole timeline from the
 //     start, never history interleaved with live.
 //   - It is NOT a decoder, NOT a parser of payloads, NOT a disk store, and NOT a
 //     peer-to-peer signaler. There is no SDP/ICE/offer/answer machinery; the
 //     legacy no-role "bridge" branch that console.log'd message bodies is gone.
 //
-// Privacy invariants (§7 / §9):
+// Privacy invariants (Section 7 / Section 9):
 //   - RAM only; nothing is ever written to disk.
-//   - It NEVER logs frame payloads — only connection metadata, token-prefixed.
+//   - It NEVER logs frame payloads - only connection metadata, token-prefixed.
 //   - It reads ONLY: the WS frame TYPE (text vs binary), the top-level envelope
 //     `type` of TEXT frames (to know a frame is a product "event" worth logging
-//     — it does NOT parse the inner payload / event_type), and the binary
+//     - it does NOT parse the inner payload / event_type), and the binary
 //     header's KEYFRAME flag (to know which media frame to retain). This is
-//     exactly why the deferred encryption seam (§9) can encrypt payloads later
+//     exactly why the deferred encryption seam (Section 9) can encrypt payloads later
 //     without the relay changing at all: the relay never reads what it forwards.
 //
 // Structure/idioms here intentionally echo the legacy signaling.js
@@ -42,30 +42,30 @@ import { networkInterfaces } from 'os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-// --- Configuration (§11) ----------------------------------------------------
+// --- Configuration (Section 11) ----------------------------------------------------
 const PORT = Number(process.env.PORT) || 8080
-// High safety cap on the per-session event log (§7). On overflow we drop the
-// OLDEST events and log a truncation line — never a silent discard.
+// High safety cap on the per-session event log (Section 7). On overflow we drop the
+// OLDEST events and log a truncation line - never a silent discard.
 const MAX_EVENT_LOG = Number(process.env.MAX_EVENT_LOG) || 10000
 // ws-level ping/pong heartbeat. A socket that misses two consecutive pings
-// (i.e. ~2× this interval with no pong) is presumed dead and terminated. This
+// (i.e. ~2x this interval with no pong) is presumed dead and terminated. This
 // is what lets a legitimate sender reconnect after a hard network drop without
-// being wrongly rejected as 4002 "sender already connected" — see reclaimStaleSender.
+// being wrongly rejected as 4002 "sender already connected" - see reclaimStaleSender.
 const HEARTBEAT_INTERVAL_MS = 30000
 
-// Protocol version we speak (§10). v mismatch policy below is "warn-and-allow"
+// Protocol version we speak (Section 10). v mismatch policy below is "warn-and-allow"
 // by default (documented), with the 4003 close code reserved and ready.
 const PROTOCOL_VERSION = '1'
 // Set to true to hard-reject a version mismatch with close 4003 instead of
-// warning and allowing. Default false === tolerate-and-warn (§10 default).
+// warning and allowing. Default false === tolerate-and-warn (Section 10 default).
 const STRICT_VERSION = process.env.STRICT_VERSION === '1'
 
-// Where the built receiver SPA lives in production (§ static hosting).
+// Where the built receiver SPA lives in production (Section  static hosting).
 // In dev you run the Vite dev server separately; this dir simply won't exist
 // and the relay serves 404 + a one-time hint (see makeHttpHandler).
 const RECEIVER_DIST = join(__dirname, '..', 'receiver', 'dist')
 
-// --- Close codes (§10) ------------------------------------------------------
+// --- Close codes (Section 10) ------------------------------------------------------
 const CLOSE = Object.freeze({
   INVALID_ROLE: 4000,       // role not in {sender, receiver}
   MISSING_TOKEN: 4001,      // token absent / empty
@@ -74,7 +74,7 @@ const CLOSE = Object.freeze({
 })
 
 // ---------------------------------------------------------------------------
-// Room state (§7). rooms: Map<token, RoomState>.
+// Room state (Section 7). rooms: Map<token, RoomState>.
 //
 //   RoomState {
 //     sender:       WebSocket | null
@@ -98,8 +98,8 @@ function getOrCreateRoom(token) {
 }
 
 // Tear a room down once nobody is in it. Dropping the room drops its entire
-// eventLog + lastVideoIDR — the spec's "drop the entire log when the room is
-// torn down" (§7).
+// eventLog + lastVideoIDR - the spec's "drop the entire log when the room is
+// torn down" (Section 7).
 function maybeDropRoom(token, room) {
   if (!room.sender && room.receivers.size === 0) {
     rooms.delete(token)
@@ -108,14 +108,14 @@ function maybeDropRoom(token, room) {
   return false
 }
 
-// Short, non-sensitive token tag for log lines (connection metadata only — we
+// Short, non-sensitive token tag for log lines (connection metadata only - we
 // never log the full token's companion `key`, which the relay never even sees).
 function tag(token) {
   return token.slice(0, 8)
 }
 
 // Monotonic connection id generator for receivers (the relay's internal handle;
-// it is NOT a wire concept — there is no per-receiver addressing, §6.3).
+// it is NOT a wire concept - there is no per-receiver addressing, Section 6.3).
 let connSeq = 0
 function nextConnId() {
   return `r${(++connSeq).toString(36)}`
@@ -125,9 +125,9 @@ function nextConnId() {
 //
 // Returns the top-level envelope `type` of a TEXT frame, or null if the frame
 // is not parseable JSON / has no string `type`. We deliberately read ONLY the
-// top-level `type` so we can recognise a product "event" worth logging (§6.1 /
-// §7). We do NOT touch `payload` or `event_type` — that's the encryption seam's
-// territory (§9) and the relay must stay payload-opaque.
+// top-level `type` so we can recognise a product "event" worth logging (Section 6.1 /
+// Section 7). We do NOT touch `payload` or `event_type` - that's the encryption seam's
+// territory (Section 9) and the relay must stay payload-opaque.
 function envelopeType(textFrame) {
   // Cheap guard: a product/control envelope is a JSON object starting with '{'.
   // This avoids JSON.parse on, say, a stray non-JSON string.
@@ -140,13 +140,13 @@ function envelopeType(textFrame) {
   }
 }
 
-// Does a TEXT frame carry a fresh incident_start? (§7 session boundary.)
-// We must detect this to clear the eventLog at the start of a new incident —
+// Does a TEXT frame carry a fresh incident_start? (Section 7 session boundary.)
+// We must detect this to clear the eventLog at the start of a new incident -
 // and it's the ONE case where we have to peek past the envelope at the inner
 // event_type. We keep that peek as narrow as possible: only when type==="event",
 // only reading the single field `payload.event_type`, never anything else, and
-// never logging it. This is the minimal read the stateful-replay design (§7)
-// requires; documented as such so the encryption seam (§9) can later mark
+// never logging it. This is the minimal read the stateful-replay design (Section 7)
+// requires; documented as such so the encryption seam (Section 9) can later mark
 // incident_start as a relay-visible control field if/when payloads encrypt.
 function isIncidentStart(textFrame) {
   try {
@@ -157,7 +157,7 @@ function isIncidentStart(textFrame) {
   }
 }
 
-// Binary header parse — KEYFRAME flag ONLY (§3). 16-byte little-endian header:
+// Binary header parse - KEYFRAME flag ONLY (Section 3). 16-byte little-endian header:
 //   byte0 version, byte1 kind, byte2 flags(bit0=KEYFRAME), byte3 cacheClass, ...
 // We read byte2 bit0 and nothing else. The payload (bytes 16..) is opaque.
 function binaryHasKeyframe(buf) {
@@ -167,7 +167,7 @@ function binaryHasKeyframe(buf) {
   return (flags & 0x01) === 0x01 // bit0 = KEYFRAME / IDR
 }
 
-// --- Per-receiver replay gating (§8 ordering & replay atomicity) -------------
+// --- Per-receiver replay gating (Section 8 ordering & replay atomicity) -------------
 //
 // When a receiver joins we must deliver: full eventLog (in order) -> lastVideoIDR
 // -> then live frames. Live frames that arrive DURING that replay must be
@@ -178,7 +178,7 @@ function binaryHasKeyframe(buf) {
 function sendToReceiver(ws, frame, isBinary) {
   const sh = ws._sh
   if (sh && !sh.replayDone) {
-    // Replay still in flight for this receiver — queue the live frame in order.
+    // Replay still in flight for this receiver - queue the live frame in order.
     sh.liveQueue.push({ frame, isBinary })
     return
   }
@@ -193,14 +193,14 @@ function rawSend(ws, frame, isBinary) {
 }
 
 // Atomically replay the room's history to a freshly joined receiver, then open
-// its live gate and flush anything that queued up during the replay (§7 / §8).
+// its live gate and flush anything that queued up during the replay (Section 7 / Section 8).
 function replayHistoryThenGoLive(ws, room, token) {
   const sh = ws._sh
-  // 1) Full eventLog, in arrival order — verbatim TEXT frames.
+  // 1) Full eventLog, in arrival order - verbatim TEXT frames.
   for (const textFrame of room.eventLog) {
     rawSend(ws, textFrame, false)
   }
-  // 2) Last video IDR (if any) — verbatim BINARY frame, so the receiver can
+  // 2) Last video IDR (if any) - verbatim BINARY frame, so the receiver can
   //    start decoding within one IDR cadence without waiting for a fresh one.
   if (room.lastVideoIDR) {
     rawSend(ws, room.lastVideoIDR, true)
@@ -219,7 +219,7 @@ function replayHistoryThenGoLive(ws, room, token) {
   )
 }
 
-// --- Presence (§6.2) — relay -> sender only ---------------------------------
+// --- Presence (Section 6.2) - relay -> sender only ---------------------------------
 function notifySenderPresence(room, event) {
   if (!room.sender || room.sender.readyState !== room.sender.OPEN) return
   room.sender.send(JSON.stringify({
@@ -296,7 +296,7 @@ function makeHttpHandler() {
     const { pathname } = new URL(req.url, 'http://x')
 
     // Confirm the dist exists; if not, this deployment is dev-mode (Vite dev
-    // server serves the UI). Serve nothing and log a one-time hint (§ static).
+    // server serves the UI). Serve nothing and log a one-time hint (Section  static).
     let distExists = false
     try {
       const st = await stat(RECEIVER_DIST)
@@ -309,14 +309,14 @@ function makeHttpHandler() {
       if (!warnedMissingDist) {
         warnedMissingDist = true
         console.log(
-          `[http] receiver/dist not found at ${RECEIVER_DIST} — serving 404 for ` +
+          `[http] receiver/dist not found at ${RECEIVER_DIST} - serving 404 for ` +
           `static assets. This is expected in DEV: run the Vite dev server for ` +
           `the receiver UI and point it at this relay's /ws. In PRODUCTION, build ` +
           `the receiver (vite build) so dist/ exists and is served on this port.`
         )
       }
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
-      res.end('Not found (receiver/dist absent — dev mode: use the Vite dev server)\n')
+      res.end('Not found (receiver/dist absent - dev mode: use the Vite dev server)\n')
       return
     }
 
@@ -359,7 +359,7 @@ wss.on('connection', (ws, req) => {
     return
   }
 
-  // --- Validation order matches the contract's close-code semantics (§1.3 / §10).
+  // --- Validation order matches the contract's close-code semantics (Section 1.3 / Section 10).
   // role must be sender|receiver, else 4000.
   if (role !== 'sender' && role !== 'receiver') {
     ws.close(CLOSE.INVALID_ROLE, 'invalid role')
@@ -370,17 +370,17 @@ wss.on('connection', (ws, req) => {
     ws.close(CLOSE.MISSING_TOKEN, 'missing token')
     return
   }
-  // version: default is tolerate-and-warn (§10). With STRICT_VERSION, mismatch
+  // version: default is tolerate-and-warn (Section 10). With STRICT_VERSION, mismatch
   // closes 4003. We accept a missing v too (legacy/optional) but warn.
   if (v !== PROTOCOL_VERSION) {
     if (STRICT_VERSION) {
       ws.close(CLOSE.VERSION_MISMATCH, 'version mismatch')
       return
     }
-    console.warn(`[${tag(token)}] ${role} connected with v=${v ?? '(none)'} (expected ${PROTOCOL_VERSION}) — tolerating`)
+    console.warn(`[${tag(token)}] ${role} connected with v=${v ?? '(none)'} (expected ${PROTOCOL_VERSION}) - tolerating`)
   }
 
-  // Heartbeat liveness state lives on the socket (§ stale-sender reclaim).
+  // Heartbeat liveness state lives on the socket (Section  stale-sender reclaim).
   ws._sh = ws._sh || {}
   ws._sh.isAlive = true
   ws.on('pong', () => { ws._sh.isAlive = true })
@@ -396,7 +396,7 @@ wss.on('connection', (ws, req) => {
 function handleSender(ws, token) {
   const room = getOrCreateRoom(token)
 
-  // One sender per token (§1.3 / §6.3). Before rejecting a new sender, reclaim
+  // One sender per token (Section 1.3 / Section 6.3). Before rejecting a new sender, reclaim
   // a stale/dead one so a legit reconnect after a hard drop isn't blocked.
   reclaimStaleSenderIfDead(room, token)
   if (room.sender && room.sender.readyState === room.sender.OPEN) {
@@ -413,19 +413,19 @@ function handleSender(ws, token) {
 
   // If receivers are already present (sender reconnected mid-incident), tell the
   // sender so it can ensure it's encoding for the current tier and force an IDR
-  // for fast resync (§6.2). The cached state already covers the timeline.
+  // for fast resync (Section 6.2). The cached state already covers the timeline.
   if (room.receivers.size > 0) {
     notifySenderPresence(room, 'receiver_joined')
   }
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) {
-      // BINARY = media (§3). Forward verbatim to all receivers; retain the last
-      // IDR. We read ONLY the KEYFRAME flag — never the payload.
+      // BINARY = media (Section 3). Forward verbatim to all receivers; retain the last
+      // IDR. We read ONLY the KEYFRAME flag - never the payload.
       // ws delivers binary as a Buffer (or array of Buffers if fragmented).
       const frame = Array.isArray(data) ? Buffer.concat(data) : data
       if (binaryHasKeyframe(frame)) {
-        room.lastVideoIDR = frame // retain-last-of-kind for video IDR (§3 cacheClass=1)
+        room.lastVideoIDR = frame // retain-last-of-kind for video IDR (Section 3 cacheClass=1)
       }
       for (const recv of room.receivers.values()) {
         sendToReceiver(recv, frame, true)
@@ -433,7 +433,7 @@ function handleSender(ws, token) {
       return
     }
 
-    // TEXT = control + product events (§2 / §5). We look only at the top-level
+    // TEXT = control + product events (Section 2 / Section 5). We look only at the top-level
     // envelope `type`.
     const text = data.toString()
     const type = envelopeType(text)
@@ -441,25 +441,25 @@ function handleSender(ws, token) {
     if (type === 'event') {
       // A fresh incident_start opens a NEW session: clear the prior eventLog and
       // the stale IDR so a late joiner doesn't see a previous incident's history
-      // (§7 session boundary). This is the one narrow inner peek we allow.
+      // (Section 7 session boundary). This is the one narrow inner peek we allow.
       if (isIncidentStart(text)) {
         if (room.eventLog.length > 0 || room.lastVideoIDR) {
-          console.log(`[${tag(token)}] incident_start — clearing prior session log (${room.eventLog.length} events)`)
+          console.log(`[${tag(token)}] incident_start - clearing prior session log (${room.eventLog.length} events)`)
         }
         room.eventLog = []
         room.lastVideoIDR = null
       }
 
-      // Append the verbatim TEXT frame to the per-session log (§7).
+      // Append the verbatim TEXT frame to the per-session log (Section 7).
       room.eventLog.push(text)
-      // Memory bound (§7 / §11): drop oldest on overflow, log a truncation line.
+      // Memory bound (Section 7 / Section 11): drop oldest on overflow, log a truncation line.
       if (room.eventLog.length > MAX_EVENT_LOG) {
         const dropped = room.eventLog.length - MAX_EVENT_LOG
         room.eventLog.splice(0, dropped)
-        console.log(`[${tag(token)}] eventLog cap ${MAX_EVENT_LOG} exceeded — dropped ${dropped} oldest event(s) (NOT silent)`)
+        console.log(`[${tag(token)}] eventLog cap ${MAX_EVENT_LOG} exceeded - dropped ${dropped} oldest event(s) (NOT silent)`)
       }
 
-      // Fan out verbatim to all receivers (§6.3).
+      // Fan out verbatim to all receivers (Section 6.3).
       for (const recv of room.receivers.values()) {
         sendToReceiver(recv, text, false)
       }
@@ -467,9 +467,9 @@ function handleSender(ws, token) {
     }
 
     if (type === 'hello') {
-      // Optional announce on (re)connect (§6.1). Role/token already came via the
+      // Optional announce on (re)connect (Section 6.1). Role/token already came via the
       // query string; nothing to route. We simply accept it (reserved for future
-      // negotiation). Not logged with payload — metadata only.
+      // negotiation). Not logged with payload - metadata only.
       return
     }
 
@@ -482,7 +482,7 @@ function handleSender(ws, token) {
     if (room.sender === ws) room.sender = null
     // Sender leaving does NOT clear the eventLog: a late receiver should still
     // see the timeline (incl. incident_closed if it was sent). Room is only torn
-    // down when truly empty (§7).
+    // down when truly empty (Section 7).
     maybeDropRoom(token, room)
   })
 
@@ -496,7 +496,7 @@ function handleReceiver(ws, token) {
   const room = getOrCreateRoom(token)
   const connId = nextConnId()
 
-  // Per-receiver replay gate (§8). Live frames queue here until history is flushed.
+  // Per-receiver replay gate (Section 8). Live frames queue here until history is flushed.
   Object.assign(ws._sh, {
     role: 'receiver',
     token,
@@ -508,31 +508,31 @@ function handleReceiver(ws, token) {
   console.log(`[${tag(token)}] receiver ${connId} connected (sender present: ${room.sender?.readyState === room.sender?.OPEN}, receivers: ${room.receivers.size})`)
 
   // Tell the sender a receiver joined (with the new count) so it can ensure it's
-  // encoding for the current tier and force an IDR for fast resync (§6.2).
+  // encoding for the current tier and force an IDR for fast resync (Section 6.2).
   notifySenderPresence(room, 'receiver_joined')
 
   // Atomically replay the full timeline + last IDR BEFORE any live frame for
-  // this receiver (§7 / §8). Frames arriving during replay are buffered above
+  // this receiver (Section 7 / Section 8). Frames arriving during replay are buffered above
   // and flushed in order at the end.
   replayHistoryThenGoLive(ws, room, token)
 
   ws.on('message', (data, isBinary) => {
     // Receivers may ONLY send `hello` to the relay; they NEVER reach the sender
-    // or other receivers (§6.1 / §6.3). Anything else is dropped.
+    // or other receivers (Section 6.1 / Section 6.3). Anything else is dropped.
     if (isBinary) return
     const type = envelopeType(data.toString())
     if (type === 'hello') {
       // Accept (reserved for future negotiation). No forwarding, no payload log.
       return
     }
-    // Silently ignore any other receiver-origin text — receivers are read-only
+    // Silently ignore any other receiver-origin text - receivers are read-only
     // on the product stream.
   })
 
   ws.on('close', (code, reason) => {
     console.log(`[${tag(token)}] receiver ${connId} disconnected code=${code} reason=${reason?.toString() || ''}`)
     if (room.receivers.get(connId) === ws) room.receivers.delete(connId)
-    // Presence: tell the sender a receiver left (with updated count) (§6.2).
+    // Presence: tell the sender a receiver left (with updated count) (Section 6.2).
     notifySenderPresence(room, 'receiver_left')
     maybeDropRoom(token, room)
   })
@@ -550,7 +550,7 @@ const heartbeat = setInterval(() => {
   for (const ws of wss.clients) {
     const sh = ws._sh
     if (sh && sh.isAlive === false) {
-      // Missed the previous ping → presume dead.
+      // Missed the previous ping -> presume dead.
       try { ws.terminate() } catch { /* ignore */ }
       continue
     }
@@ -575,23 +575,23 @@ function getLocalIP() {
 server.listen(PORT, '0.0.0.0', () => {
   const ip = getLocalIP()
   console.log()
-  console.log('╔════════════════════════════════════════════════════╗')
-  console.log(`║  SafeHaven v1 Relay (M1)        port ${String(PORT).padEnd(15)}║`)
-  console.log('╠════════════════════════════════════════════════════╣')
-  console.log(`║  WebSocket:  ws://${ip}:${PORT}/ws`.padEnd(54) + '║')
-  console.log(`║  Receiver:   http://${ip}:${PORT}/  (if dist built)`.padEnd(54) + '║')
-  console.log('╠════════════════════════════════════════════════════╣')
-  console.log(`║  Roles: ?role=sender|receiver&token=<hex>&v=1`.padEnd(54) + '║')
-  console.log(`║  Event-log cap: ${String(MAX_EVENT_LOG).padEnd(36)}║`)
-  console.log(`║  Version policy: ${(STRICT_VERSION ? 'strict (close 4003)' : 'warn-and-allow').padEnd(35)}║`)
-  console.log('╚════════════════════════════════════════════════════╝')
+  console.log('+----------------------------------------------------+')
+  console.log(`|  SafeHaven v1 Relay (M1)        port ${String(PORT).padEnd(15)}|`)
+  console.log('+----------------------------------------------------+')
+  console.log(`|  WebSocket:  ws://${ip}:${PORT}/ws`.padEnd(54) + '|')
+  console.log(`|  Receiver:   http://${ip}:${PORT}/  (if dist built)`.padEnd(54) + '|')
+  console.log('+----------------------------------------------------+')
+  console.log(`|  Roles: ?role=sender|receiver&token=<hex>&v=1`.padEnd(54) + '|')
+  console.log(`|  Event-log cap: ${String(MAX_EVENT_LOG).padEnd(36)}|`)
+  console.log(`|  Version policy: ${(STRICT_VERSION ? 'strict (close 4003)' : 'warn-and-allow').padEnd(35)}|`)
+  console.log('+----------------------------------------------------+')
   console.log()
   console.log('Waiting for connections...')
 })
 
 // Graceful shutdown: close sockets so clients get a clean close + reconnect.
 function shutdown(sig) {
-  console.log(`\n[relay] ${sig} — shutting down`)
+  console.log(`\n[relay] ${sig} - shutting down`)
   clearInterval(heartbeat)
   for (const ws of wss.clients) {
     try { ws.close(1001, 'server shutting down') } catch { /* ignore */ }
