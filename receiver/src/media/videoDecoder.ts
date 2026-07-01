@@ -21,6 +21,7 @@ import type { InboundTransform } from '../transport/inboundTransform';
 
 /** Baseline H.264, level 3.1 — matches the sender's encoder profile (§4.1). */
 const H264_CODEC = 'avc1.42E01F';
+const RIGHT_ANGLE = Math.PI / 2;
 
 export type VideoSupport = 'unknown' | 'supported' | 'unsupported';
 
@@ -226,13 +227,33 @@ export class VideoDecoderController {
       const canvas = this.getCanvas();
       const ctx = canvas?.getContext('2d') ?? null;
       if (canvas && ctx) {
-        // Size the canvas to the source once it's known, then draw.
-        if (canvas.width !== vf.displayWidth || canvas.height !== vf.displayHeight) {
-          canvas.width = vf.displayWidth;
-          canvas.height = vf.displayHeight;
+        const sourceWidth = vf.displayWidth;
+        const sourceHeight = vf.displayHeight;
+        // The sender is a portrait front-camera feed. Some capture paths still
+        // encode 720p as 1280x720 with the portrait pixels rotated left, and
+        // WebCodecs exposes those raw decoded dimensions without applying any
+        // camera orientation metadata. Normalize that legacy shape here so the
+        // UI always receives an upright portrait canvas.
+        const rotatePortraitFrame = sourceWidth > sourceHeight;
+        const targetWidth = rotatePortraitFrame ? sourceHeight : sourceWidth;
+        const targetHeight = rotatePortraitFrame ? sourceWidth : sourceHeight;
+
+        if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+        } else {
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.clearRect(0, 0, targetWidth, targetHeight);
         }
+
+        if (rotatePortraitFrame) {
+          ctx.translate(targetWidth, 0);
+          ctx.rotate(RIGHT_ANGLE);
+        }
+
         // VideoFrame is a valid CanvasImageSource in WebCodecs-capable browsers.
-        ctx.drawImage(vf as unknown as CanvasImageSource, 0, 0);
+        ctx.drawImage(vf as unknown as CanvasImageSource, 0, 0, sourceWidth, sourceHeight);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
       }
     } catch {
       /* swallow draw errors — never kill the feed on a single frame */
