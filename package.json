@@ -9,7 +9,10 @@
   },
   "scripts": {
     "start": "node relay.js",
-    "dev": "node relay.js"
+    "dev": "node relay.js",
+    "dev:receiver": "npm run dev --prefix receiver",
+    "build:receiver": "npm ci --prefix receiver && npm run build --prefix receiver",
+    "build": "npm run build:receiver"
   },
   "dependencies": {
     "ws": "^8.20.0"

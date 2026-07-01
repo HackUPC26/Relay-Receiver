@@ -1,3 +1,5 @@
 node_modules/
+receiver/node_modules/
+receiver/dist/
 .env
 .DS_Store

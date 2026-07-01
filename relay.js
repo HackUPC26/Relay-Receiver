@@ -60,10 +60,11 @@ const PROTOCOL_VERSION = '1'
 // warning and allowing. Default false === tolerate-and-warn (Section 10 default).
 const STRICT_VERSION = process.env.STRICT_VERSION === '1'
 
-// Where the built receiver SPA lives in production (Section  static hosting).
-// In dev you run the Vite dev server separately; this dir simply won't exist
-// and the relay serves 404 + a one-time hint (see makeHttpHandler).
-const RECEIVER_DIST = join(__dirname, '..', 'receiver', 'dist')
+// Where the built receiver SPA lives in production. The receiver source lives
+// in this repo and the root build script generates receiver/dist before deploy.
+// In dev you can run the Vite dev server separately; if this dir does not exist
+// the relay serves 404 + a one-time hint (see makeHttpHandler).
+const RECEIVER_DIST = join(__dirname, 'receiver', 'dist')
 
 // --- Close codes (Section 10) ------------------------------------------------------
 const CLOSE = Object.freeze({
@@ -311,8 +312,8 @@ function makeHttpHandler() {
         console.log(
           `[http] receiver/dist not found at ${RECEIVER_DIST} - serving 404 for ` +
           `static assets. This is expected in DEV: run the Vite dev server for ` +
-          `the receiver UI and point it at this relay's /ws. In PRODUCTION, build ` +
-          `the receiver (vite build) so dist/ exists and is served on this port.`
+          `the receiver UI and point it at this relay's /ws. In PRODUCTION, run ` +
+          `npm run build so receiver/dist exists and is served on this port.`
         )
       }
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })

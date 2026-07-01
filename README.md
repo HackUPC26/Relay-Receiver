@@ -10,6 +10,17 @@ This repository was extracted from the larger SafeHaven v1 project. The relay
 wire contract is included in [PROTOCOL.md](PROTOCOL.md) so this GitHub repo is
 self-contained.
 
+## Repository layout
+
+```text
+.
+  relay.js              Node WebSocket relay and static file server
+  receiver/             Vite + React receiver source
+  receiver/dist/        Generated production receiver bundle, not committed
+  PROTOCOL.md           Wire protocol shared by sender, relay, and receiver
+  fly.toml              Fly.io app config
+```
+
 ## What it does
 
 - Runs `http.createServer` + `WebSocketServer({ server })` on one port.
@@ -69,23 +80,24 @@ after a drop is accepted.
 
 ## Static hosting
 
-- Production inside the SafeHaven v1 workspace: if `../receiver/dist` exists,
-  the same port serves the built receiver SPA with an `index.html` fallback for
-  deep links and `#<token>:<key>` URL fragments.
-- Standalone production: deploy the receiver UI separately, or preserve the
-  same relative `../receiver/dist` layout beside this repo.
-- Development: if `../receiver/dist` is absent, the relay serves 404 for static
-  assets and logs a one-time hint. Run the Vite dev server for the UI and point
-  it at this relay's `/ws`.
+- Production: `npm run build` builds the receiver into `receiver/dist`. The
+  relay serves that SPA from the same port as `/ws`, with an `index.html`
+  fallback for deep links and `#<token>:<key>` URL fragments.
+- Development: if `receiver/dist` is absent, the relay serves 404 for static
+  assets and logs a one-time hint. Run the Vite dev server with
+  `npm run dev:receiver`; it proxies `/ws` to the local relay.
 
 ## Run
 
 ```bash
-cd relay
 npm install
 
-# optional: cp .env.example .env  (PORT, MAX_EVENT_LOG)
+npm run build
 npm start
+
+# optional: cp .env.example .env  (PORT, MAX_EVENT_LOG)
+# or run the receiver separately during development:
+npm run dev:receiver
 
 # strict version rejection instead of warn-and-allow:
 STRICT_VERSION=1 npm start
@@ -98,8 +110,12 @@ Requires Node >= 20, ESM (`"type":"module"`), and the `ws` package.
 
 ## Deploy on Fly.io
 
-This repo includes `fly.toml` for the `safehaven-relayserver` app. The relay
-listens on `0.0.0.0:${PORT}` and defaults to `8080`, so Fly is configured with:
+This repo includes `fly.toml` for the `safehaven-relayserver` app. Fly runs the
+root `build` script, which installs receiver dependencies and builds
+`receiver/dist` before the relay starts.
+
+The relay listens on `0.0.0.0:${PORT}` and defaults to `8080`, so Fly is
+configured with:
 
 ```toml
 [env]
@@ -129,8 +145,8 @@ warning by default.
 
 ## Quick local smoke test
 
-1. Run `npm start` in this repo.
+1. Run `npm install && npm run build && npm start` in this repo.
 2. In another shell, run the mock sender from the SafeHaven v1 workspace:
    `../tools/mock-sender`. It prints a receiver URL.
-3. Open that URL in the receiver UI and watch the incident populate, including
-   the full back-timeline if you join late.
+3. Open that URL against the relay origin and watch the incident populate,
+   including the full back-timeline if you join late.
