@@ -1,4 +1,4 @@
-# SafeHaven RelayServer
+# SafeHaven Relay-Receiver
 
 Standalone production service for SafeHaven v1. It runs the Node WebSocket relay
 and builds/serves the browser receiver from the same deploy.

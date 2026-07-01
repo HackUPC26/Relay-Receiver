@@ -1,6 +1,6 @@
 # Deployment
 
-RelayServer deploys as one Fly.io app that serves both the WebSocket relay and
+Relay-Receiver deploys as one Fly.io app that serves both the WebSocket relay and
 the built receiver SPA.
 
 ## Fly.io
